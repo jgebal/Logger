@@ -6,6 +6,7 @@
 - [Change Log](#change-log)
 - [License](#license)
 
+
 # What is Logger?
 
 Logger is a PL/SQL logging and debugging framework. The goal of logger is to be as simple as possible to install and use. The primary use cases for this utility include:
