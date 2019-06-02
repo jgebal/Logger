@@ -1,5 +1,8 @@
 <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VNNFRTC6YP8ZL"><img alt="Donate to Logger" border="0" src="https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif"></a>
 
+[![build](https://img.shields.io/travis/jgebal/Logger/3.2.0.svg?label=release%203.2.0)](https://travis-ci.org/jgebal/Logger)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=jgebal_Logger&metric=alert_status)](https://sonarcloud.io/dashboard?id=jgebal_Logger)
+
 - [What is Logger?](#what-is-logger)
 - [Documentation](#documentation)
 - [Download](#download)

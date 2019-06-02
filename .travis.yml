@@ -1,0 +1,118 @@
+sudo: required
+
+language: java
+jdk:
+  - oraclejdk8
+
+addons:
+  sonarcloud:
+    #update this to your org
+    organization: jgebal-github
+
+env:
+  global:
+    # Docker variables:
+    - DOCKHER_HUB_REPO="${DOCKER_USER}/oracledb"
+    - ORACLE_VERSION=11g-r2-xe
+    - CONNECTION_STR='127.0.0.1:1521/XE'
+    - DOCKER_OPTIONS='--shm-size=1g'
+
+    # SYS account password for DB - could be stored in Travis secrets
+    - ORACLE_SYS_PASS="oracle"
+    # Adding utPLSQL-cli to path - to be able to invoke "utplsql" from command line
+    - PATH=$PATH:${TRAVIS_BUILD_DIR}/utPLSQL-cli/bin
+    # Adding Oracle SQLCL to path - to be able to invoke "sql" from command line
+    - PATH=$PATH:${TRAVIS_BUILD_DIR}/sqlcl/bin
+
+    # Project-specific database variables
+    # used for creating the user in database, deploying source code and tests as well as executing the tests
+    - DB_USER=logger_user
+    - DB_PASS=logger_user_pass
+    #utPLSQL variables
+    - UTPLSQL_DIR="utPLSQL"
+    - CACHE_DIR=$HOME/.cache
+    # Additionally, you need to set following variables as Travis secrets:
+    #    DOCKER_USER          - Your Dockerhub user
+    #    DOCKER_PASSWORD      - Your Dockerhub PASS
+    #    ORACLE_OTN_USER      - Your Oracle Tech Net user
+    #    ORACLE_OTN_PASSWORD  - Your Oracle Tech Net PASS
+    #    DB_SYS_PASSWORD      - SYS account password for DB
+    #    SONAR_TOKEN          - if you want to use sonarcloud.io for static code analysis and publishing of test results - see https://docs.travis-ci.com/user/sonarcloud/
+  matrix:
+    - UTPLSQL_VERSION='develop'
+    - UTPLSQL_VERSION='v3.1.6'
+
+cache:
+  pip: true
+  directories:
+    - $CACHE_DIR
+    - node_modules
+
+before_install:
+  # Download Oracle sqlcl
+  - .travis/install_sqlcl.sh -u ${ORACLE_OTN_USER} -p ${ORACLE_OTN_PASSWORD} -d ${CACHE_DIR} -o ${TRAVIS_BUILD_DIR}
+  # Check if Oracle sqlcl it is installed correctly
+  - sql -v
+
+  # download and unzip utPLSQL-cli release
+  - curl -Lk -o utPLSQL-cli.zip "https://github.com/utPLSQL/utPLSQL-cli/releases/download/v3.1.6/utPLSQL-cli.zip"
+  - unzip utPLSQL-cli.zip && chmod -R u+x utPLSQL-cli
+  # copy ojdbc.jar from sqlcl to utPSLQL-cli so it can be visible to utPSLQL-cli
+  - cp sqlcl/lib/ojdbc8.jar utPLSQL-cli/lib && cp sqlcl/lib/orai18n.jar utPLSQL-cli/lib
+
+  # Download specified version of utPLSQL from utPLSQL github repo
+  # Allows any utPLSQL branch/tag name to be used
+  - git clone --depth=1 --branch=${UTPLSQL_VERSION} https://github.com/utPLSQL/utPLSQL.git ${UTPLSQL_DIR}
+
+  # update version placeholder before install
+  # This is only needed when downloading utPLSQL versions older than 3.1
+  - if [[ -n ${VERSION_PLACEHOLDER} ]] ; then sed -i "s/${VERSION_PLACEHOLDER}/${UTPLSQL_VERSION}/g" ${UTPLSQL_DIR}/source/core/ut_utils.pks; fi
+
+  - docker login -u "${DOCKER_USER}" -p "${DOCKER_PASSWORD}"
+  # download Oracle Database docker image from private repo and start the DB
+  - docker pull ${DOCKHER_HUB_REPO}:${ORACLE_VERSION}
+  # start the docker container (DB)
+  - docker run -d --name ${ORACLE_VERSION} ${DOCKER_OPTIONS} -p 1521:1521 ${DOCKHER_HUB_REPO}:${ORACLE_VERSION}
+  # Wait for DB startup
+  - docker logs -f ${ORACLE_VERSION} | grep -m 1 "DATABASE IS READY TO USE!" --line-buffered
+
+  # Install utPLSQL into the Database
+  - .travis/install_utplsql.sh
+
+install:
+  # Create the demo project DB user account
+  - sql sys/${DB_SYS_PASSWORD}@//${CONNECTION_STR} as sysdba @scripts/create_user_headless.sql ${DB_USER} ${DB_PASS}
+  # Install project sources
+  - |
+    sql ${DB_USER}/${DB_PASS}@//${CONNECTION_STR} <<-SQL
+      alter session set plsql_ccflags = 'logger_context:true, no_op:false, logger_debug:true, APEX:false, logger_plugin_error: true';
+      @install/logger_install.sql
+      exit
+    SQL
+  # Grant needed for tests - to use DMBS_LOCK.SLEEP in tests as the docker image used doesn't include APEX at all
+  - |
+    sql sys/${DB_SYS_PASSWORD}@//${CONNECTION_STR} as sysdba <<-SQL
+      grant execute on dbms_lock to ${DB_USER};
+      exit
+    SQL
+  # Install project tests
+  - |
+    sql ${DB_USER}/${DB_PASS}@//${CONNECTION_STR} <<-SQL
+      set echo on
+      @tests/test_logger.pks
+      @tests/test_logger.pkb
+      exit
+    SQL
+
+script:
+  # Run tests
+  - |
+    utplsql run ${DB_USER}/${DB_PASS}@//${CONNECTION_STR} \
+      -source_path=packages -test_path=tests \
+      -f=ut_documentation_reporter  -c \
+      -f=ut_coverage_sonar_reporter -o=coverage.xml \
+      -f=ut_sonar_test_reporter     -o=test_results.xml \
+      --failure-exit-code=0
+  # --failure-exit-code=0 skips test errors and failures
+  # Run sonar scanner and publish to sonar
+  - sonar-scanner
